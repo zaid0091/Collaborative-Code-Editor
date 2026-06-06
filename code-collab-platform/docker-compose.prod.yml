@@ -1,0 +1,38 @@
+# Production Docker Compose overrides
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+services:
+  backend:
+    command: >
+      uvicorn config.asgi:application
+      --host 0.0.0.0
+      --port 8000
+      --workers 4
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.prod
+      DEBUG: "false"
+
+  celery-persist:
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.prod
+
+  celery-exec-high:
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.prod
+
+  celery-exec-low:
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.prod
+
+  celery-beat:
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.prod
+
+  postgres:
+    restart: unless-stopped
+
+  redis:
+    restart: unless-stopped
+
+  nginx:
+    restart: unless-stopped

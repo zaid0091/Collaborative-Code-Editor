@@ -1,0 +1,24 @@
+{
+  "defaultAction": "SCMP_ACT_ERRNO",
+  "defaultErrnoRet": 1,
+  "archMap": [
+    {
+      "architecture": "SCMP_ARCH_X86_64",
+      "subArchitectures": ["SCMP_ARCH_X86", "SCMP_ARCH_X32"]
+    }
+  ],
+  "syscalls": [
+    {
+      "comment": "Placeholder seccomp profile — deny dangerous syscalls in Phase 2",
+      "names": [
+        "mount",
+        "umount2",
+        "pivot_root",
+        "ptrace",
+        "socket",
+        "connect"
+      ],
+      "action": "SCMP_ACT_ERRNO"
+    }
+  ]
+}
