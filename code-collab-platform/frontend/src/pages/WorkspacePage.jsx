@@ -18,6 +18,7 @@ export default function WorkspacePage() {
   const [workspace, setWorkspace] = useState(null);
   const [projects, setProjects] = useState([]);
   const [memberCount, setMemberCount] = useState(0);
+  const [userRole, setUserRole] = useState("viewer");
   const [selectedFileId, setSelectedFileId] = useState(null);
   const [selectedFilePath, setSelectedFilePath] = useState("");
   const [fileMeta, setFileMeta] = useState(null);
@@ -38,18 +39,18 @@ export default function WorkspacePage() {
         api.get(`/workspaces/${workspaceId}/members/`),
       ]);
 
-      const currentWorkspace = workspacesResponse.data.find(
-        (item) => item.id === workspaceId,
-      );
+      const currentWorkspace = workspacesResponse.data.find((item) => item.id === workspaceId);
       setWorkspace(currentWorkspace || null);
       setProjects(projectsResponse.data);
       setMemberCount(membersResponse.data.length);
+      const membership = membersResponse.data.find((member) => member.user.id === user?.id);
+      setUserRole(membership?.role || "viewer");
     } catch (err) {
       setError(err.response?.data?.detail || "Failed to load workspace.");
     } finally {
       setIsLoading(false);
     }
-  }, [workspaceId]);
+  }, [workspaceId, user?.id]);
 
   useEffect(() => {
     loadWorkspaceData();
@@ -182,6 +183,7 @@ export default function WorkspacePage() {
                   provider={provider}
                   ydoc={ydoc}
                   localUser={localUser}
+                  userRole={userRole}
                 />
               ) : null}
             </div>

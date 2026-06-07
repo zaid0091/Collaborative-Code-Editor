@@ -32,10 +32,7 @@ export default function AppRoutes() {
       <Route element={<ProtectedRoute />}>
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/workspace/:workspaceId" element={<WorkspacePage />} />
-        <Route
-          path="/workspace/:workspaceId/project/:projectId"
-          element={<ProjectPage />}
-        />
+        <Route path="/workspace/:workspaceId/project/:projectId" element={<ProjectPage />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/dashboard" replace />} />

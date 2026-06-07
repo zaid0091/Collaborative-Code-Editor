@@ -1,0 +1,23 @@
+name: Load Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: Target URL for load test
+        required: true
+
+jobs:
+  load-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install k6
+        run: |
+          curl https://github.com/grafana/k6/releases/download/v0.49.0/k6-v0.49.0-linux-amd64.tar.gz \
+            -L | tar xvz
+          sudo mv k6-*/k6 /usr/local/bin/
+      - name: Run WS connection test
+        run: k6 run scripts/load-test-ws.js
+        env:
+          TARGET_URL: ${{ inputs.target_url }}

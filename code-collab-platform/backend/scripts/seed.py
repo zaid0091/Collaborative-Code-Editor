@@ -15,6 +15,7 @@ import django
 
 django.setup()
 
+from apps.comments.models import Comment, CommentReaction  # noqa: E402
 from apps.files.models import File  # noqa: E402
 from apps.users.models import User  # noqa: E402
 from apps.workspaces.models import Project, Workspace, WorkspaceMember  # noqa: E402
@@ -58,7 +59,7 @@ def main() -> None:
         defaults={"created_by": dev_user},
     )
 
-    File.objects.get_or_create(
+    first_file, _ = File.objects.get_or_create(
         project=project,
         path="main.py",
         defaults={
@@ -74,6 +75,58 @@ def main() -> None:
             "content": 'console.log("hello")',
             "language": "javascript",
         },
+    )
+
+    comment_1, _ = Comment.objects.get_or_create(
+        file=first_file,
+        author=dev_user,
+        line_start=1,
+        line_end=3,
+        branch_name="main",
+        defaults={
+            "content": "Consider adding a module docstring here.",
+        },
+    )
+    Comment.objects.get_or_create(
+        file=first_file,
+        author=dev_user,
+        line_start=5,
+        line_end=7,
+        branch_name="main",
+        defaults={
+            "content": "This block could use clearer variable names.",
+        },
+    )
+    Comment.objects.get_or_create(
+        file=first_file,
+        author=dev_user,
+        line_start=10,
+        line_end=10,
+        branch_name="main",
+        defaults={
+            "content": "Single-line note on line 10.",
+        },
+    )
+    Comment.objects.get_or_create(
+        file=first_file,
+        author=dev_user,
+        parent=comment_1,
+        line_start=1,
+        line_end=3,
+        branch_name="main",
+        defaults={
+            "content": "Good point — I'll add that in the next pass.",
+        },
+    )
+    CommentReaction.objects.get_or_create(
+        comment=comment_1,
+        user=dev_user,
+        emoji="👍",
+    )
+    CommentReaction.objects.get_or_create(
+        comment=comment_1,
+        user=dev_user,
+        emoji="🚀",
     )
 
     print("Seed complete: dev@test.com / password123")

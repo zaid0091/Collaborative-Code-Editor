@@ -46,6 +46,7 @@ class JWTAuthMiddlewareStack:
                 payload = decode_token(token)
                 if payload.get("type") == "access":
                     scope["user"] = await _load_user(payload["user_id"])
+                    scope["jwt_exp"] = payload.get("exp")
             except Exception:
                 scope["user"] = AnonymousUser()
 

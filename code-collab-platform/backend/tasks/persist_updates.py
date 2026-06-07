@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import base64
+import time
 
 import redis as sync_redis
 from celery import shared_task
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
+
+from apps.core.metrics import (
+    crdt_compaction_duration_seconds,
+    crdt_ops_compacted_total,
+    execution_queue_depth,
+    ws_ban_active,
+)
+from core.logging import log_compaction, log_compaction_error
 
 
 def get_sync_redis():
@@ -79,80 +88,103 @@ def compact_snapshot(self, file_id: str):
     from apps.files.models import File, FileVersion, OperationLog
 
     redis_client = get_sync_redis()
+    start_time = time.monotonic()
+    ops_count = 0
 
-    with transaction.atomic():
-        try:
-            file_obj = File.objects.select_for_update().get(id=file_id)
-        except File.DoesNotExist:
-            return
+    try:
+        with crdt_compaction_duration_seconds.time():
+            with transaction.atomic():
+                try:
+                    file_obj = File.objects.select_for_update().get(id=file_id)
+                except File.DoesNotExist:
+                    return
 
-        checkpoint = file_obj.compaction_checkpoint_version
-        server_version = int(redis_client.get(f"file:{file_id}:version") or checkpoint)
+                checkpoint = file_obj.compaction_checkpoint_version
+                server_version = int(redis_client.get(f"file:{file_id}:version") or checkpoint)
 
-        if server_version <= checkpoint:
-            return
+                if server_version <= checkpoint:
+                    return
 
-        ops = list(
-            OperationLog.objects.filter(
+                ops = list(
+                    OperationLog.objects.filter(
+                        file_id=file_id,
+                        vector_clock__gt=checkpoint,
+                    ).order_by("vector_clock")
+                )
+                redis_ops = redis_client.lrange(f"file:{file_id}:updates", 0, -1)
+
+                if not ops and not redis_ops:
+                    return
+
+                ops_count = len(ops) + len(redis_ops)
+                existing_snapshot = bytes(file_obj.yjs_snapshot) if file_obj.yjs_snapshot else b""
+                op_binaries = []
+
+                for op in ops:
+                    update_b64 = op.operation_json.get("update", "")
+                    if update_b64:
+                        op_binaries.append(base64.b64decode(update_b64))
+
+                for update_b64 in redis_ops:
+                    try:
+                        op_binaries.append(base64.b64decode(update_b64))
+                    except Exception:
+                        continue
+
+                new_snapshot = existing_snapshot
+                for binary in op_binaries:
+                    new_snapshot = new_snapshot + binary  # TODO: replace with ypy merge
+
+                file_obj.yjs_snapshot = new_snapshot
+                file_obj.yjs_state_version = server_version
+                file_obj.compaction_checkpoint_version = server_version
+                file_obj.last_compacted_at = timezone.now()
+                file_obj.save(
+                    update_fields=[
+                        "yjs_snapshot",
+                        "yjs_state_version",
+                        "compaction_checkpoint_version",
+                        "last_compacted_at",
+                    ]
+                )
+
+                OperationLog.objects.filter(
+                    file_id=file_id,
+                    vector_clock__lte=server_version,
+                ).delete()
+
+                if redis_ops:
+                    redis_client.ltrim(f"file:{file_id}:updates", len(redis_ops), -1)
+
+                redis_client.set(f"file:{file_id}:op_count", 0)
+
+                if file_obj.content:
+                    FileVersion.objects.create(
+                        file=file_obj,
+                        snapshot=file_obj.content,
+                        created_by=None,
+                        source=FileVersion.SOURCE_COMPACTION,
+                        branch_name="main",
+                        label=f"Auto checkpoint v{server_version}",
+                    )
+
+        if ops_count:
+            crdt_ops_compacted_total.inc(ops_count)
+            duration_ms = int((time.monotonic() - start_time) * 1000)
+            log_compaction(
                 file_id=file_id,
-                vector_clock__gt=checkpoint,
-            ).order_by("vector_clock")
-        )
-        redis_ops = redis_client.lrange(f"file:{file_id}:updates", 0, -1)
-
-        if not ops and not redis_ops:
-            return
-
-        existing_snapshot = bytes(file_obj.yjs_snapshot) if file_obj.yjs_snapshot else b""
-        op_binaries = []
-
-        for op in ops:
-            update_b64 = op.operation_json.get("update", "")
-            if update_b64:
-                op_binaries.append(base64.b64decode(update_b64))
-
-        for update_b64 in redis_ops:
-            try:
-                op_binaries.append(base64.b64decode(update_b64))
-            except Exception:
-                continue
-
-        new_snapshot = existing_snapshot
-        for binary in op_binaries:
-            new_snapshot = new_snapshot + binary  # TODO: replace with ypy merge
-
-        file_obj.yjs_snapshot = new_snapshot
-        file_obj.yjs_state_version = server_version
-        file_obj.compaction_checkpoint_version = server_version
-        file_obj.last_compacted_at = timezone.now()
-        file_obj.save(
-            update_fields=[
-                "yjs_snapshot",
-                "yjs_state_version",
-                "compaction_checkpoint_version",
-                "last_compacted_at",
-            ]
-        )
-
-        OperationLog.objects.filter(
-            file_id=file_id,
-            vector_clock__lte=server_version,
-        ).delete()
-
-        if redis_ops:
-            redis_client.ltrim(f"file:{file_id}:updates", len(redis_ops), -1)
-
-        redis_client.set(f"file:{file_id}:op_count", 0)
-
-        if file_obj.content:
-            FileVersion.objects.create(
-                file=file_obj,
-                snapshot=file_obj.content,
-                created_by=None,
-                source=FileVersion.SOURCE_COMPACTION,
-                branch_name="main",
-                label=f"Auto checkpoint v{server_version}",
+                ops_compacted=ops_count,
+                duration_ms=duration_ms,
+                checkpoint_version=server_version,
             )
+
+    except Exception as exc:
+        log_compaction_error(
+            file_id=file_id,
+            error_type=type(exc).__name__,
+            message=str(exc),
+        )
+        raise
 
 
 @shared_task(name="crdt.idle_compact")
@@ -175,3 +207,19 @@ def flush_all_active_files():
         file_id = parts[1]
         if redis_client.llen(key) > 0:
             flush_operations_to_db.apply_async(args=[file_id], queue="crdt.persist")
+
+
+@shared_task(name="tasks.sample_queue_depth")
+def sample_queue_depth():
+    """Sample Celery queue lengths and update Prometheus gauges."""
+    redis_client = get_sync_redis()
+    for queue_name, metric_label in [
+        (settings.EXEC_HIGH_QUEUE, "execution.high"),
+        (settings.EXEC_LOW_QUEUE, "execution.low"),
+        ("crdt.persist", "crdt.persist"),
+    ]:
+        depth = redis_client.llen(queue_name)
+        execution_queue_depth.labels(metric_label).set(depth)
+
+    ban_count = sum(1 for _ in redis_client.scan_iter("ws:ban:*", count=100))
+    ws_ban_active.set(ban_count)

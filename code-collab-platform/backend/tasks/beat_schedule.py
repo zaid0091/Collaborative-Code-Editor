@@ -9,4 +9,8 @@ CELERY_BEAT_SCHEDULE = {
         "task": "crdt.flush_all_active",
         "schedule": 30.0,
     },
+    "sample-queue-depth": {
+        "task": "tasks.sample_queue_depth",
+        "schedule": 15.0,
+    },
 }

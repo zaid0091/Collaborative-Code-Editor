@@ -1,38 +1,133 @@
 # Production Docker Compose overrides
 # Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
+version: "3.9"
+
 services:
   backend:
+    build:
+      context: .
+      dockerfile: docker/backend/Dockerfile
+      target: production
     command: >
-      uvicorn config.asgi:application
-      --host 0.0.0.0
-      --port 8000
-      --workers 4
+      gunicorn config.asgi:application
+      -k uvicorn.workers.UvicornWorker
+      -w 4
+      --bind 0.0.0.0:8000
+      --timeout 120
+      --graceful-timeout 30
+      --keep-alive 5
+      --access-logfile -
+      --error-logfile -
     environment:
       DJANGO_SETTINGS_MODULE: config.settings.prod
-      DEBUG: "false"
+      NODE_ID: ${NODE_ID:-backend}
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   celery-persist:
+    build:
+      target: production
     environment:
       DJANGO_SETTINGS_MODULE: config.settings.prod
+    command: >
+      celery -A tasks worker
+      -Q crdt.persist
+      -c 2
+      --prefetch-multiplier=1
+      -l INFO
+      --without-gossip
+      --without-mingle
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    restart: unless-stopped
 
   celery-exec-high:
+    build:
+      target: production
     environment:
       DJANGO_SETTINGS_MODULE: config.settings.prod
+    command: >
+      celery -A tasks worker
+      -Q execution.high,execution.low
+      -c 4
+      --prefetch-multiplier=1
+      -l INFO
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    restart: unless-stopped
 
   celery-exec-low:
+    build:
+      target: production
     environment:
       DJANGO_SETTINGS_MODULE: config.settings.prod
+    command: >
+      celery -A tasks worker
+      -Q execution.low
+      -c 2
+      --prefetch-multiplier=1
+      -l INFO
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
 
   celery-beat:
+    build:
+      target: production
     environment:
       DJANGO_SETTINGS_MODULE: config.settings.prod
+    command: celery -A tasks beat -l INFO --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    restart: unless-stopped
 
   postgres:
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
     restart: unless-stopped
 
   redis:
+    command: >
+      redis-server
+      --maxmemory 1gb
+      --maxmemory-policy allkeys-lru
+      --save 900 1
+      --save 300 10
+      --appendonly yes
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1.5G
     restart: unless-stopped
 
   nginx:
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
     restart: unless-stopped

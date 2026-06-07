@@ -6,6 +6,7 @@ from apps.workspaces.models import Project, Workspace, WorkspaceMember
 
 class WorkspaceSerializer(serializers.ModelSerializer):
     owner = UserSerializer(read_only=True)
+    name = serializers.CharField(max_length=255)
 
     class Meta:
         model = Workspace
@@ -23,7 +24,7 @@ class WorkspaceMemberSerializer(serializers.ModelSerializer):
 
 
 class WorkspaceMemberCreateSerializer(serializers.Serializer):
-    email = serializers.EmailField()
+    email = serializers.EmailField(max_length=255)
     role = serializers.ChoiceField(
         choices=WorkspaceMember.ROLES,
         default=WorkspaceMember.ROLE_EDITOR,
@@ -42,6 +43,7 @@ class ProjectSerializer(serializers.ModelSerializer):
         write_only=True,
         required=False,
     )
+    name = serializers.CharField(max_length=255)
 
     class Meta:
         model = Project

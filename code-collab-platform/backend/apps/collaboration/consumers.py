@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import socket
 import time
 import uuid
@@ -16,13 +17,39 @@ from django.conf import settings
 from django.contrib.auth.models import AnonymousUser
 
 from apps.collaboration.ws_abuse import WSAbuseGuard
+from apps.core.metrics import ws_active_connections, ws_messages_total
+from core.logging import log_ws_connect, log_ws_disconnect
+from core.middleware import bind_correlation_id
 
 
 class CollaborationConsumer(AsyncJsonWebsocketConsumer):
     MAX_UPDATE_SIZE_BYTES = 512 * 1024
+    MAX_WS_FRAME_BYTES = 512 * 1024
     HEARTBEAT_TIMEOUT_SEC = 75
+    TOKEN_EXPIRY_WARN_SEC = 300
 
     _redis_override = None
+    DRAIN_MESSAGE = "Server restarting. Please reconnect."
+
+    async def _check_node_draining(self) -> bool:
+        """
+        Called on connect. If node is marked draining,
+        immediately send drain notice and close.
+        """
+        node_id = os.environ.get("NODE_ID", socket.gethostname())
+        redis_client = await self.get_redis()
+        is_draining = await redis_client.exists(f"node:{node_id}:draining")
+        if is_draining:
+            await self.accept()
+            await self.send_json(
+                {
+                    "type": "server_draining",
+                    "message": self.DRAIN_MESSAGE,
+                }
+            )
+            await self.close(code=4010)
+            return True
+        return False
 
     async def connect(self):
         self.file_id = self.scope["url_route"]["kwargs"]["file_id"]
@@ -31,42 +58,71 @@ class CollaborationConsumer(AsyncJsonWebsocketConsumer):
         self.group_name = f"file_{self.file_id}"
         self.last_ping = time.monotonic()
         self._connected = False
+        self._token_expiring_notified = False
+
+        if await self._check_node_draining():
+            return
 
         if not self.user or isinstance(self.user, AnonymousUser):
             await self.close(code=4001)
             return
 
+        redis_client = await self.get_redis()
+        self.abuse_guard = WSAbuseGuard(redis_client)
+
+        # SECURITY: ws:ban:{user_id} Redis ban check — close 4003 before joining group.
+        if await self.abuse_guard.is_banned(str(self.user.id)):
+            from apps.core.metrics import ws_abuse_disconnects_total
+
+            ws_abuse_disconnects_total.labels("banned").inc()
+            await self.close(code=4003)
+            return
+
+        # SECURITY: WorkspaceMember must exist and file must belong to that workspace.
         has_access = await self.check_file_access(self.file_id, self.user)
         if not has_access:
             await self.close(code=4001)
-            return
-
-        redis_client = await self.get_redis()
-        self.abuse_guard = WSAbuseGuard(redis_client)
-        if await self.abuse_guard.is_banned(str(self.user.id)):
-            await self.close(code=4003)
             return
 
         await self.redis_connect()
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
 
-        redis_client = await self.get_redis()
-        draining = await redis_client.get(f"node:{socket.gethostname()}:draining")
-        if draining:
-            await self.send_json({"type": "server_draining"})
-            await self.redis_disconnect()
-            await self.channel_layer.group_discard(self.group_name, self.channel_name)
-            await self.close(code=4000)
-            return
-
         self._connected = True
+        self.connected_at = time.monotonic()
+
+        bind_correlation_id(self.session_id)
 
         version = await self.get_current_version()
         await self.send_json({"type": "server_version", "version": version})
 
+        log_ws_connect(
+            user_id=self.user.id,
+            file_id=self.file_id,
+            session_id=self.session_id,
+            node_id=socket.gethostname(),
+        )
+        ws_active_connections.labels("aggregate").inc()
+
         self._heartbeat_task = asyncio.ensure_future(self.heartbeat_monitor())
         asyncio.create_task(self._broadcast_user_joined())
+        await self._maybe_warn_token_expiry()
+
+    async def receive(self, text_data=None, bytes_data=None, **kwargs):
+        frame_size = len(bytes_data) if bytes_data is not None else len(text_data or "")
+        # SECURITY: reject oversized raw WebSocket frames before JSON parsing.
+        if frame_size > self.MAX_WS_FRAME_BYTES:
+            await self.close(code=1009)
+            return
+        await super().receive(text_data=text_data, bytes_data=bytes_data, **kwargs)
+
+    async def _maybe_warn_token_expiry(self):
+        exp = self.scope.get("jwt_exp")
+        if not exp or self._token_expiring_notified:
+            return
+        if exp - time.time() < self.TOKEN_EXPIRY_WARN_SEC:
+            self._token_expiring_notified = True
+            await self.send_json({"type": "token_expiring_soon"})
 
     async def heartbeat_monitor(self):
         while True:
@@ -94,6 +150,16 @@ class CollaborationConsumer(AsyncJsonWebsocketConsumer):
         if not getattr(self, "_connected", False):
             return
 
+        duration_sec = round(time.monotonic() - getattr(self, "connected_at", time.monotonic()), 2)
+        log_ws_disconnect(
+            user_id=self.user.id,
+            file_id=self.file_id,
+            session_id=self.session_id,
+            reason=str(close_code),
+            duration_sec=duration_sec,
+        )
+        ws_active_connections.labels("aggregate").dec()
+
         await self.redis_disconnect()
         await self.channel_layer.group_discard(self.group_name, self.channel_name)
         await self.channel_layer.group_send(
@@ -116,9 +182,7 @@ class CollaborationConsumer(AsyncJsonWebsocketConsumer):
             )
 
     async def receive_json(self, content, **kwargs):
-        await self.refresh_connection_ttl()
-        self.last_ping = time.monotonic()
-
+        # SECURITY: rate-limit / abuse guard runs before any other message handling.
         result = await self.abuse_guard.check(
             self.session_id,
             str(self.user.id),
@@ -130,6 +194,7 @@ class CollaborationConsumer(AsyncJsonWebsocketConsumer):
                 str(self.user.id),
                 self.session_id,
                 "message_rate_exceeded",
+                force_disconnect=True,
             )
             await self.send_json(
                 {
@@ -152,6 +217,12 @@ class CollaborationConsumer(AsyncJsonWebsocketConsumer):
         if result == "drop":
             return
 
+        ws_messages_total.labels(content.get("type", "unknown"), "inbound").inc()
+
+        await self.refresh_connection_ttl()
+        self.last_ping = time.monotonic()
+        await self._maybe_warn_token_expiry()
+
         msg_type = content.get("type")
         handlers = {
             "ping": self.handle_ping,
@@ -159,6 +230,7 @@ class CollaborationConsumer(AsyncJsonWebsocketConsumer):
             "awareness": self.handle_awareness,
             "cursor": self.handle_cursor,
             "sync_request": self.handle_sync_request,
+            "comment_event": self.handle_comment_event,
         }
 
         handler = handlers.get(msg_type)
@@ -178,7 +250,12 @@ class CollaborationConsumer(AsyncJsonWebsocketConsumer):
             return
 
         if len(raw) > self.MAX_UPDATE_SIZE_BYTES:
-            await self.close(code=1009)
+            # SECURITY: oversized Yjs update — drop message and record abuse strike.
+            await self.abuse_guard.record_violation(
+                str(self.user.id),
+                self.session_id,
+                "oversized_update",
+            )
             return
 
         new_version = await self.append_to_buffer(update_b64)
@@ -235,6 +312,17 @@ class CollaborationConsumer(AsyncJsonWebsocketConsumer):
                 }
             )
 
+    async def handle_comment_event(self, content):
+        payload = content.get("payload", content)
+        await self.channel_layer.group_send(
+            self.group_name,
+            {
+                "type": "broadcast.comment_event",
+                "payload": payload,
+                "sender_channel": self.channel_name,
+            },
+        )
+
     async def broadcast_update(self, event):
         if event.get("sender_channel") != self.channel_name:
             await self.send_json({"type": "update", "update": event["update"]})
@@ -275,8 +363,18 @@ class CollaborationConsumer(AsyncJsonWebsocketConsumer):
         )
 
     async def broadcast_server_draining(self, event):
-        await self.send_json({"type": "server_draining"})
-        await self.close(code=4000)
+        await self.send_json(
+            {
+                "type": "server_draining",
+                "message": event.get("message", self.DRAIN_MESSAGE),
+            }
+        )
+        await self.close(code=4010)
+
+    async def broadcast_comment_event(self, event):
+        if event.get("sender_channel") == self.channel_name:
+            return
+        await self.send_json(event.get("payload", event))
 
     async def redis_connect(self):
         redis_client = await self.get_redis()

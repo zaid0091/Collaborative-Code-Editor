@@ -333,10 +333,11 @@ async def test_server_draining_message_sent_to_connected_clients(
     )
 
     draining_message = await communicator.receive_json_from()
-    assert draining_message == {"type": "server_draining"}
+    assert draining_message["type"] == "server_draining"
+    assert "message" in draining_message
     close_event = await communicator.receive_output(timeout=1)
     assert close_event["type"] == "websocket.close"
-    assert close_event["code"] == 4000
+    assert close_event["code"] == 4010
 
     await communicator.disconnect()
 
@@ -382,8 +383,9 @@ async def test_connect_rejected_when_node_is_draining(async_redis, owner, collab
 
     assert connected is True
     draining_message = await communicator.receive_json_from()
-    assert draining_message == {"type": "server_draining"}
+    assert draining_message["type"] == "server_draining"
+    assert "message" in draining_message
     close_event = await communicator.receive_output(timeout=1)
-    assert close_event["code"] == 4000
+    assert close_event["code"] == 4010
 
     await communicator.disconnect()

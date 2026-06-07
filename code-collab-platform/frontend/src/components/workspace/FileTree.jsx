@@ -1,11 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import {
-  createFile,
-  deleteFile,
-  getFileTree,
-  updateFilePath,
-} from "../../services/api.js";
+import { createFile, deleteFile, getFileTree, updateFilePath } from "../../services/api.js";
 
 const LANGUAGE_ICONS = {
   python: "PY",
@@ -38,17 +33,8 @@ function buildTree(files) {
   return root;
 }
 
-function TreeNode({
-  node,
-  depth,
-  selectedFileId,
-  onFileSelect,
-  onRename,
-  onDelete,
-}) {
-  const childFolders = Object.values(node.children).sort((a, b) =>
-    a.name.localeCompare(b.name),
-  );
+function TreeNode({ node, depth, selectedFileId, onFileSelect, onRename, onDelete }) {
+  const childFolders = Object.values(node.children).sort((a, b) => a.name.localeCompare(b.name));
   const files = [...node.files].sort((a, b) => a.fileName.localeCompare(b.fileName));
 
   return (

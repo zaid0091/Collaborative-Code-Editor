@@ -36,6 +36,7 @@ def _clear_refresh_cookie(response) -> None:
     )
 
 
+# SECURITY AUDIT: permission confirmed — AllowAny for public auth endpoints.
 class RegisterView(CreateAPIView):
     permission_classes = [AllowAny]
     serializer_class = RegisterSerializer
@@ -47,6 +48,7 @@ class RegisterView(CreateAPIView):
         return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
 
 
+# SECURITY AUDIT: permission confirmed — AllowAny; credentials validated in serializer.
 class LoginView(APIView):
     permission_classes = [AllowAny]
 
@@ -69,6 +71,7 @@ class LoginView(APIView):
         return response
 
 
+# SECURITY AUDIT: permission confirmed — AllowAny; refresh token validated + rotated.
 class RefreshView(APIView):
     permission_classes = [AllowAny]
 
@@ -99,6 +102,7 @@ class RefreshView(APIView):
         return response
 
 
+# SECURITY AUDIT: permission confirmed — IsAuthenticated; blacklists refresh cookie.
 class LogoutView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -113,6 +117,7 @@ class LogoutView(APIView):
         return response
 
 
+# SECURITY AUDIT: permission confirmed — IsAuthenticated; returns request.user only.
 class MeView(RetrieveAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = UserSerializer

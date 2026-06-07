@@ -9,6 +9,7 @@ def test_ci_placeholder():
 
 
 def test_health_import():
-    from core.views import health
+    from apps.core.health import health_check, readiness_check
 
-    assert callable(health)
+    assert callable(health_check)
+    assert callable(readiness_check)

@@ -20,8 +20,7 @@ export const useAuthStore = create((set, get) => ({
       });
       return response.data;
     } catch (error) {
-      const detail =
-        error.response?.data?.detail || error.message || "Login failed.";
+      const detail = error.response?.data?.detail || error.message || "Login failed.";
       set({ isLoading: false, error: detail });
       throw error;
     }
@@ -68,8 +67,7 @@ export const useAuthStore = create((set, get) => ({
       set({ isLoading: false });
       return response.data;
     } catch (error) {
-      const detail =
-        error.response?.data?.detail || error.message || "Registration failed.";
+      const detail = error.response?.data?.detail || error.message || "Registration failed.";
       set({ isLoading: false, error: detail });
       throw error;
     }

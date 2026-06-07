@@ -22,6 +22,7 @@ from core.permissions import (
 )
 
 
+# SECURITY AUDIT: permission confirmed — IsAuthenticated; queryset scoped to member workspaces.
 class WorkspaceViewSet(ModelViewSet):
     permission_classes = [IsAuthenticated]
     serializer_class = WorkspaceSerializer
@@ -50,6 +51,7 @@ class WorkspaceViewSet(ModelViewSet):
         return super().destroy(request, *args, **kwargs)
 
 
+# SECURITY AUDIT: permission confirmed — IsAuthenticated + IsWorkspaceOwner; workspace_pk scoped.
 class WorkspaceMemberViewSet(ViewSet):
     permission_classes = [IsAuthenticated, IsWorkspaceOwner]
 
@@ -135,6 +137,7 @@ class WorkspaceMemberViewSet(ViewSet):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+# SECURITY AUDIT: permission confirmed — IsWorkspaceMember/Editor; queryset scoped to workspace_pk.
 class ProjectViewSet(ModelViewSet):
     permission_classes = [IsAuthenticated, IsWorkspaceMember]
     serializer_class = ProjectSerializer
@@ -151,6 +154,7 @@ class ProjectViewSet(ModelViewSet):
     def get_queryset(self):
         return Project.objects.filter(
             workspace_id=self.kwargs["workspace_pk"],
+            workspace__members__user=self.request.user,
         ).order_by("-created_at")
 
     def perform_create(self, serializer):

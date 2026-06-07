@@ -6,7 +6,8 @@ from apps.users.models import User
 
 
 class RegisterSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, min_length=8)
+    password = serializers.CharField(write_only=True, min_length=8, max_length=128)
+    display_name = serializers.CharField(max_length=100)
 
     class Meta:
         model = User
@@ -30,8 +31,8 @@ class RegisterSerializer(serializers.ModelSerializer):
 
 
 class LoginSerializer(serializers.Serializer):
-    email = serializers.EmailField()
-    password = serializers.CharField(write_only=True)
+    email = serializers.EmailField(max_length=255)
+    password = serializers.CharField(write_only=True, max_length=128)
 
     def validate(self, attrs):
         email = attrs.get("email", "").lower()

@@ -1,7 +1,5 @@
-"""Core views."""
+"""Legacy health view — delegates to apps.core.health."""
 
-from django.http import JsonResponse
+from apps.core.health import health_check as health
 
-
-def health(_request):
-    return JsonResponse({"status": "ok"})
+__all__ = ["health"]

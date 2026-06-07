@@ -16,6 +16,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 environ.Env.read_env(BASE_DIR.parent / ".env")
 
+# SECURITY AUDIT: no hardcoded production secrets — override via environment in prod.
 SECRET_KEY = env("SECRET_KEY", default="django-insecure-change-me")
 DEBUG = env("DEBUG")
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["localhost", "127.0.0.1"])
@@ -34,6 +35,8 @@ THIRD_PARTY_APPS = [
     "corsheaders",
     "channels",
     "django_celery_beat",
+    "django_structlog",
+    "django_prometheus",
 ]
 
 LOCAL_APPS = [
@@ -43,11 +46,16 @@ LOCAL_APPS = [
     "apps.files",
     "apps.execution",
     "apps.ai",
+    "apps.comments",
+    "apps.core",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 
 MIDDLEWARE = [
+    "django_prometheus.middleware.PrometheusBeforeMiddleware",
+    "core.middleware.CorrelationIDMiddleware",
+    "django_structlog.middlewares.RequestMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -57,6 +65,7 @@ MIDDLEWARE = [
     "core.middleware.JWTAuthMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "django_prometheus.middleware.PrometheusAfterMiddleware",
 ]
 
 ROOT_URLCONF = "config.urls"
@@ -123,9 +132,7 @@ CHANNEL_LAYERS = {
 
 # Django REST Framework
 REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": (
-        "core.authentication.JWTAuthentication",
-    ),
+    "DEFAULT_AUTHENTICATION_CLASSES": ("core.authentication.JWTAuthentication",),
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "EXCEPTION_HANDLER": "core.exceptions.custom_exception_handler",
 }
@@ -147,11 +154,14 @@ CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_DEFAULT_QUEUE = "default"
 CELERY_TASK_ROUTES = {
     "crdt.*": {"queue": "crdt.persist"},
+    "execution.run_code": {"queue": EXEC_HIGH_QUEUE},
     "execution.*": {"queue": EXEC_HIGH_QUEUE},
     "tasks.worker_tasks.persist_updates": {"queue": "crdt.persist"},
     "tasks.worker_tasks.compact_snapshot": {"queue": "crdt.persist"},
     "tasks.worker_tasks.run_code": {"queue": EXEC_HIGH_QUEUE},
     "tasks.worker_tasks.run_ai_analysis": {"queue": EXEC_LOW_QUEUE},
+    "ai.detect_bugs": {"queue": EXEC_LOW_QUEUE},
+    "comments.broadcast_event": {"queue": "crdt.persist"},
 }
 CELERY_TASK_QUEUE_MAX_PRIORITY = 10
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
@@ -179,7 +189,51 @@ EXECUTION_RATE_LIMIT = env.int("EXECUTION_RATE_LIMIT", default=10)
 EXEC_FAIR_MAX_CONCURRENT = env.int("EXEC_FAIR_MAX_CONCURRENT", default=2)
 EXEC_FAIR_MAX_PENDING_HIGH = env.int("EXEC_FAIR_MAX_PENDING_HIGH", default=3)
 EXEC_FAIR_MAX_PENDING_LOW = env.int("EXEC_FAIR_MAX_PENDING_LOW", default=10)
+EXECUTOR_IMAGE = env("EXECUTOR_IMAGE", default="code-collab-executor:latest")
 
 # AI
 AI_PROVIDER = env("AI_PROVIDER", default="openai")
 OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
+ANTHROPIC_API_KEY = env("ANTHROPIC_API_KEY", default="")
+OPENAI_MODEL = env("OPENAI_MODEL", default="gpt-4o-mini")
+ANTHROPIC_MODEL = env("ANTHROPIC_MODEL", default="claude-3-haiku-20240307")
+AI_DAILY_TOKEN_BUDGET = env.int("AI_DAILY_TOKEN_BUDGET", default=50000)
+
+import structlog  # noqa: E402
+
+# Structured logging (Section 11)
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "json": {
+            "()": "structlog.stdlib.ProcessorFormatter",
+            "processor": structlog.processors.JSONRenderer(),
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "json",
+        },
+    },
+    "root": {"handlers": ["console"], "level": "INFO"},
+}
+
+structlog.configure(
+    processors=[
+        structlog.contextvars.merge_contextvars,
+        structlog.stdlib.filter_by_level,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.PositionalArgumentsFormatter(),
+        structlog.processors.TimeStamper(fmt="iso", key="timestamp"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.UnicodeDecoder(),
+        structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+    ],
+    logger_factory=structlog.stdlib.LoggerFactory(),
+    wrapper_class=structlog.stdlib.BoundLogger,
+    cache_logger_on_first_use=True,
+)

@@ -40,7 +40,11 @@ export function useCollaboration(fileId) {
     ydocRef.current = nextDoc;
     setYdoc(nextDoc);
 
-    const nextProvider = new CollabProvider(fileId, () => useAuthStore.getState().accessToken, nextDoc);
+    const nextProvider = new CollabProvider(
+      fileId,
+      () => useAuthStore.getState().accessToken,
+      nextDoc,
+    );
     const awareness = createLocalAwareness((state) => {
       nextProvider.sendAwarenessState(state);
     });

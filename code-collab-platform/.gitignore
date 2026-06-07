@@ -1,7 +1,9 @@
 # Environment
 .env
 .env.local
-.env.*.local
+.env.*
+*.env
+secrets/
 
 # Python
 __pycache__/

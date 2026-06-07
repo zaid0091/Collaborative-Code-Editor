@@ -11,6 +11,8 @@ app.autodiscover_tasks(
         "apps.collaboration",
         "apps.execution",
         "apps.files",
+        "apps.ai",
+        "apps.comments",
     ],
 )
 

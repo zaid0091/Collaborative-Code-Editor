@@ -2,144 +2,136 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
-
-env:
-  PYTHON_VERSION: "3.11"
-  NODE_VERSION: "20"
+    branches: [main]
 
 jobs:
-  backend-lint-test:
-    name: Backend lint & test
+  backend-lint:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff black
+      - run: ruff check backend/
+      - run: black --check backend/
 
+  backend-test:
+    runs-on: ubuntu-latest
+    needs: backend-lint
     services:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_DB: collab_test
-          POSTGRES_USER: collab
-          POSTGRES_PASSWORD: collab
-        ports:
-          - 5432:5432
+          POSTGRES_DB: test
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
         options: >-
-          --health-cmd "pg_isready -U collab -d collab_test"
-          --health-interval 5s
+          --health-cmd pg_isready
+          --health-interval 10s
           --health-timeout 5s
-          --health-retries 10
-
+          --health-retries 5
       redis:
         image: redis:7-alpine
-        ports:
-          - 6379:6379
         options: >-
           --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-
-    defaults:
-      run:
+          --health-interval 10s
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r backend/requirements/dev.txt
+      - name: Run tests
         working-directory: backend
-
-    env:
-      DATABASE_URL: postgres://collab:collab@localhost:5432/collab_test
-      REDIS_URL: redis://localhost:6379/0
-      SECRET_KEY: test-secret
-      DEBUG: "true"
-      DJANGO_SETTINGS_MODULE: config.settings.dev
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
-          cache-dependency-path: backend/requirements/dev.txt
-
-      - name: Install dependencies
-        run: pip install -r requirements/dev.txt
-
-      - name: Ruff check
-        run: ruff check .
-
-      - name: Black check
-        run: black --check .
-
-      - name: Pytest
-        run: pytest -v --tb=short
-
-  frontend-lint-test:
-    name: Frontend lint & test
-    runs-on: ubuntu-latest
-
-    defaults:
-      run:
-        working-directory: frontend
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: ESLint
-        run: npx eslint src/
-
-      - name: Prettier check
-        run: npx prettier --check "src/**/*.{js,jsx,css}"
-
-      - name: Vitest
-        run: npx vitest run
-
-  docker-build:
-    name: Docker build
-    runs-on: ubuntu-latest
-    needs: [backend-lint-test, frontend-lint-test]
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build backend image
-        run: docker build -f docker/backend/Dockerfile -t code-collab-backend:ci .
-
-      - name: Build frontend image
-        run: docker build -f docker/frontend/Dockerfile -t code-collab-frontend:ci .
-
-      - name: Build executor image
-        run: docker build -f docker/executor/Dockerfile -t code-collab-executor:ci .
-
-      # TODO: push to ECR on main branch (Phase 3 hardening)
-
-  executor-jailbreak-tests:
-    name: Executor jailbreak tests
-    runs-on: ubuntu-latest
-    needs: [docker-build]
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Build executor image
-        run: docker build -f docker/executor/Dockerfile -t code-collab-executor:ci .
-
-      - name: Run jailbreak test suite
-        run: bash scripts/test_jailbreak.sh
         env:
-          EXECUTOR_IMAGE: code-collab-executor:ci
+          DATABASE_URL: postgres://test:test@localhost/test
+          REDIS_URL: redis://localhost:6379/0
+          SECRET_KEY: ci-test-secret-key-not-real
+          DJANGO_SETTINGS_MODULE: config.settings.dev
+        run: pytest --cov=apps --cov-report=xml -x -q
+      - uses: codecov/codecov-action@v4
+        with:
+          files: backend/coverage.xml
+          fail_ci_if_error: false
+
+  frontend-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: cd frontend && npm ci
+      - run: cd frontend && npm run lint
+      - run: cd frontend && npm run format:check
+
+  frontend-test:
+    runs-on: ubuntu-latest
+    needs: frontend-lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: cd frontend && npm ci
+      - run: cd frontend && npm run test:ci
+
+  executor-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r backend/requirements/dev.txt
+      - name: Build executor image
+        run: docker build -t executor-test -f docker/executor/Dockerfile docker/executor/
+      - name: Jailbreak test suite
+        run: |
+          # Test 1: /proc access denied
+          result=$(docker run --rm \
+            --entrypoint python3 \
+            --network none --read-only \
+            --security-opt no-new-privileges:true \
+            --cap-drop ALL --user 65534:65534 \
+            executor-test \
+            -c "open('/proc/1/environ').read()" 2>&1 || true)
+          echo "$result" | grep -qiE "permission denied|no such file" \
+            && echo "PASS: /proc blocked" \
+            || (echo "FAIL: /proc accessible" && exit 1)
+
+          # Test 2: network blocked (socket syscall)
+          result=$(docker run --rm \
+            --entrypoint python3 \
+            --network none --read-only \
+            --security-opt no-new-privileges:true \
+            --cap-drop ALL --user 65534:65534 \
+            executor-test \
+            -c "import socket; socket.socket()" 2>&1 || true)
+          echo "$result" | grep -qiE "permission denied|operation not permitted|blocked" \
+            && echo "PASS: socket blocked" \
+            || (echo "FAIL: socket accessible" && exit 1)
+
+          # Test 3: write to /etc blocked
+          result=$(docker run --rm \
+            --entrypoint python3 \
+            --network none --read-only \
+            --security-opt no-new-privileges:true \
+            --cap-drop ALL --user 65534:65534 \
+            executor-test \
+            -c "open('/etc/pwned','w').write('x')" 2>&1 || true)
+          echo "$result" | grep -qiE "read-only|permission denied" \
+            && echo "PASS: /etc write blocked" \
+            || (echo "FAIL: /etc writable" && exit 1)
+
+          # Test 4: static scanner blocks pip install
+          result=$(cd backend && PYTHONPATH=. python3 -c "
+          from apps.execution.code_scanner import scan_code
+          safe, reason = scan_code('pip install requests', 'python')
+          assert not safe, 'Scanner should reject pip install'
+          print('PASS: scanner blocked pip install')
+          ")
+          echo "$result"

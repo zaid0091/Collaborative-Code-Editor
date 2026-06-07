@@ -168,7 +168,7 @@ export class CollabProvider extends EventEmitter {
         this.emit("auth-failed");
         return;
       }
-      if (event.code === 4000) {
+      if (event.code === 4000 || event.code === 4010) {
         this._scheduleReconnect(0);
         return;
       }
@@ -222,7 +222,9 @@ export class CollabProvider extends EventEmitter {
       case "pong":
         break;
       case "server_draining":
-        this._scheduleReconnect(0);
+        this._setStatus("reconnecting");
+        this._showToast(message.message || "Server updating — reconnecting automatically...");
+        setTimeout(() => this._scheduleReconnect(0), 2000);
         break;
       case "server_version":
         this.lastKnownVersion = message.version;
@@ -232,6 +234,9 @@ export class CollabProvider extends EventEmitter {
         break;
       case "error":
         this.emit("error", message);
+        break;
+      case "comment_event":
+        this.emit("comment_event", message);
         break;
       default:
         break;
@@ -307,6 +312,27 @@ export class CollabProvider extends EventEmitter {
   _setStatus(status) {
     this.status = status;
     this.emit("status-change", status);
+  }
+
+  _showToast(message) {
+    const toast = document.createElement("div");
+    toast.textContent = message;
+    toast.setAttribute("role", "status");
+    Object.assign(toast.style, {
+      position: "fixed",
+      bottom: "24px",
+      right: "24px",
+      padding: "12px 16px",
+      background: "#1e293b",
+      color: "#f8fafc",
+      borderRadius: "8px",
+      boxShadow: "0 8px 24px rgba(15, 23, 42, 0.35)",
+      zIndex: "9999",
+      maxWidth: "320px",
+      fontSize: "14px",
+    });
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 5000);
   }
 
   _updatePeerCursor(message) {

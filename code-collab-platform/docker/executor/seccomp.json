@@ -1,24 +1,31 @@
 {
-  "defaultAction": "SCMP_ACT_ERRNO",
-  "defaultErrnoRet": 1,
-  "archMap": [
-    {
-      "architecture": "SCMP_ARCH_X86_64",
-      "subArchitectures": ["SCMP_ARCH_X86", "SCMP_ARCH_X32"]
-    }
-  ],
+  "defaultAction": "SCMP_ACT_ALLOW",
   "syscalls": [
     {
-      "comment": "Placeholder seccomp profile — deny dangerous syscalls in Phase 2",
       "names": [
         "mount",
         "umount2",
         "pivot_root",
+        "chroot",
         "ptrace",
         "socket",
-        "connect"
+        "connect",
+        "accept",
+        "bind",
+        "listen",
+        "sethostname",
+        "unshare",
+        "setns",
+        "keyctl",
+        "add_key",
+        "init_module",
+        "delete_module",
+        "finit_module",
+        "create_module",
+        "query_module"
       ],
-      "action": "SCMP_ACT_ERRNO"
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
     }
   ]
 }

@@ -1,10 +1,13 @@
 from rest_framework import serializers
 
-from apps.files.models import File
+from apps.files.models import File, FileBranch, FileVersion
+from apps.users.serializers import UserSerializer
+from core.validators import validate_file_path
 
 
 class FileSerializer(serializers.ModelSerializer):
     tier = serializers.SerializerMethodField()
+    content = serializers.CharField(max_length=100000, required=False, allow_blank=True)
 
     class Meta:
         model = File
@@ -35,14 +38,7 @@ class FileSerializer(serializers.ModelSerializer):
         return obj.tier
 
     def validate_path(self, value):
-        if ".." in value:
-            raise serializers.ValidationError("Path traversal is not allowed.")
-        if value.startswith("/"):
-            raise serializers.ValidationError("Path must not start with '/'.")
-        if "\x00" in value:
-            raise serializers.ValidationError("Path contains invalid characters.")
-        if len(value) > 500:
-            raise serializers.ValidationError("Path must be at most 500 characters.")
+        validate_file_path(value)
         return value.strip("/")
 
 
@@ -75,3 +71,39 @@ class FileTreeSerializer(serializers.ModelSerializer):
 
     def get_tier(self, obj):
         return obj.tier
+
+
+class FileVersionSerializer(serializers.ModelSerializer):
+    created_by = UserSerializer(read_only=True)
+    label = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    branch_name = serializers.CharField(max_length=255)
+
+    class Meta:
+        model = FileVersion
+        fields = [
+            "id",
+            "file",
+            "branch_name",
+            "snapshot_hash",
+            "label",
+            "source",
+            "created_by",
+            "created_at",
+            "parent_version",
+        ]
+        read_only_fields = ["id", "snapshot_hash", "created_at"]
+
+
+class FileVersionDetailSerializer(FileVersionSerializer):
+    snapshot = serializers.CharField(max_length=100000, required=False, allow_blank=True)
+
+    class Meta(FileVersionSerializer.Meta):
+        fields = FileVersionSerializer.Meta.fields + ["snapshot"]
+
+
+class FileBranchSerializer(serializers.ModelSerializer):
+    name = serializers.CharField(max_length=255)
+
+    class Meta:
+        model = FileBranch
+        fields = ["id", "name", "is_default", "created_at", "head_version"]

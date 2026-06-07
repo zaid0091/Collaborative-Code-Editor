@@ -6,6 +6,9 @@ import os
 import time
 from typing import Literal
 
+from apps.core.metrics import ws_abuse_disconnects_total, ws_ban_active
+from core.logging import log_ws_abuse
+
 AbuseAction = Literal["allow", "warn", "drop", "disconnect"]
 
 SILENT_DROP_TYPES = frozenset({"awareness", "cursor", "ping", "sync_request", "join"})
@@ -57,9 +60,7 @@ class WSAbuseGuard:
             total_action = await self._check_total_limit(session_id)
 
             severity = ["allow", "warn", "drop", "disconnect"]
-            return severity[
-                max(severity.index(type_action), severity.index(total_action))
-            ]
+            return severity[max(severity.index(type_action), severity.index(total_action))]
         except Exception:
             return self._check_local_fallback(session_id, msg_type)
 
@@ -143,13 +144,16 @@ class WSAbuseGuard:
         return "allow"
 
     async def record_violation(
-        self, user_id: str, session_id: str, reason: str
+        self,
+        user_id: str,
+        session_id: str,
+        reason: str,
+        force_disconnect: bool = False,
     ) -> dict:
         """
         Increment user-level abuse strikes.
         Returns: {strikes, banned, ban_duration_sec?}
         """
-        del session_id, reason
         strikes_key = f"ws:abuse:{user_id}:strikes"
         recent_key = f"ws:abuse:{user_id}:recent"
 
@@ -175,9 +179,16 @@ class WSAbuseGuard:
             await self.redis.set(f"ws:ban:{user_id}", 1, ex=ban_sec)
             result["banned"] = True
             result["ban_duration_sec"] = ban_sec
+            ws_ban_active.inc()
 
         if total >= 10:
             await self.redis.set(f"ws:flagged:{user_id}", 1, ex=86400)
+
+        action = "ban" if result["banned"] else "strike"
+        log_ws_abuse(user_id, session_id, reason, result["strikes"], action)
+
+        if force_disconnect:
+            ws_abuse_disconnects_total.labels(reason).inc()
 
         return result
 
